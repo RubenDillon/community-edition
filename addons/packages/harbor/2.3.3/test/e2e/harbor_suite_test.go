@@ -40,8 +40,8 @@ type packageDependency struct {
 }
 
 const (
-	packagePollInterval = "5s"
-	packagePollTimeout  = "10m"
+	packagePollInterval = "10s"
+	packagePollTimeout  = "20m"
 )
 
 var (
@@ -78,6 +78,9 @@ var (
 
 	// installedPackages record the packages installed by the test
 	installedPackages []string
+
+	// storage class name for PVC usage
+	storageclass string
 )
 
 var _ = BeforeSuite(func() {
@@ -87,15 +90,12 @@ var _ = BeforeSuite(func() {
 
 	packageComponentsNamespace = "goharbor"
 
+	storageclass = setStorageClass()
+	fmt.Println("storageclass", storageclass)
+
 	packageDependencies = []*packageDependency{
 		{"cert-manager", "cert-manager", ""},
 		{"contour", "contour", configContourYamlFile()},
-	}
-
-	if !hasDefaultStorageClass() {
-		packageDependencies = append(packageDependencies,
-			&packageDependency{"local-path-storage", "local-path-storage", ""},
-		)
 	}
 
 	for _, dependency := range packageDependencies {
@@ -121,6 +121,7 @@ var _ = BeforeSuite(func() {
 			"PACKAGE_COMPONENTS_NAMESPACE": packageComponentsNamespace,
 			"harbor.yourdomain.com":        harborHostname,
 			"Harbor12345":                  harborAdminPassword,
+			"STORAGE_CLASS":                storageclass,
 		},
 	)
 	Expect(err).NotTo(HaveOccurred())
@@ -173,11 +174,36 @@ func findPackageAvailableVersion(packageName string, versionSubstr string) strin
 	return matchedVersions[len(matchedVersions)-1]
 }
 
-func hasDefaultStorageClass() bool {
-	output, err := utils.Kubectl(nil, "get", "storageclasses")
+/*
+apply a "rancher.io/local-path" storageclass for clusters lack of csi driver to dynamically provisioning for PVC usages
+clusters included and before tkg1.5(k8s1.22) have in-tree cloud provider plugin
+vsphere clusters have own storageclass with csi "csi.vsphere.vmware.com"
+
+only when clusters without csi driver but with annotations "migrated_plugins" will have to install local-path-storage
+aws and azure clusters would apply this "rancher.io/local-path" sc instead of the default one
+
+return storageclass name for PVC
+*/
+func setStorageClass() string {
+	jsonPath := `jsonpath='{.items[0].metadata.annotations}'`
+	csi_migrated_plugins, err := utils.Kubectl(nil, "get", "csinodes", "-o", jsonPath)
+	fmt.Println("csi_migrated_plugins:", csi_migrated_plugins)
 	Expect(err).NotTo(HaveOccurred())
 
-	return strings.Contains(output, "(default)")
+	jsonPath = `jsonpath='{.items[0].spec.drivers}'`
+	csidriver, err := utils.Kubectl(nil, "get", "csinodes", "-o", jsonPath)
+	fmt.Println("csidriver:", csidriver)
+	Expect(err).NotTo(HaveOccurred())
+
+	if (csidriver == "'<nil>'") && (strings.Contains(csi_migrated_plugins, "kubernetes.io/aws-ebs,kubernetes.io/azure-disk")) {
+		// apply a new local-path-storage
+		_, err := utils.Kubectl(nil, "apply", "-f", filepath.Join("fixtures", "local-path-storage.yaml"))
+		Expect(err).NotTo(HaveOccurred())
+		return "local-path"
+	}
+
+	return ""
+
 }
 
 func getContourEnvoyLoadBalancerIP() string {
