@@ -81,6 +81,7 @@ var (
 
 	// storage class name for PVC usage
 	storageclass string
+	isDefault    bool
 )
 
 var _ = BeforeSuite(func() {
@@ -90,7 +91,11 @@ var _ = BeforeSuite(func() {
 
 	packageComponentsNamespace = "goharbor"
 
-	storageclass = setStorageClass()
+	//storageclass = getStorageClass()
+	storageclass, isDefault = getAvailableStorageClass()
+	if isDefault {
+		storageclass = ""
+	}
 	fmt.Println("storageclass", storageclass)
 
 	packageDependencies = []*packageDependency{
@@ -179,29 +184,78 @@ apply a "rancher.io/local-path" storageclass for clusters lack of csi driver to 
 clusters included and before tkg1.5(k8s1.22) have in-tree cloud provider plugin
 vsphere clusters have own storageclass with csi "csi.vsphere.vmware.com"
 
-only when clusters without csi driver but with annotations "migrated_plugins" will have to install local-path-storage
-aws and azure clusters would apply this "rancher.io/local-path" sc instead of the default one
+only when clusters without csi driver neither have a local-path-storage would have to install it
+Temporarily, aws and azure clusters would apply this "rancher.io/local-path" sc instead of the default one
 
-return storageclass name for PVC
+return storageclass name for PVC and boolean isDefaultStorageClass
 */
-func setStorageClass() string {
-	jsonPath := `jsonpath='{.items[0].metadata.annotations}'`
-	csiMigratedPlugins, err := utils.Kubectl(nil, "get", "csinodes", "-o", jsonPath)
-	fmt.Println("csiMigratedPlugins:", csiMigratedPlugins)
+func getAvailableStorageClass() (string, bool) {
+	name, provisioner := getDefaultStorageClass()
+	// clusters using kubernetes verions prior to 1.23
+	if (getKubernetesVersion() < "1.23") && (provisioner != "") {
+		return name, true
+	}
+	// already has a local-path storageclass or a CSIDriver
+	if provisioner == "rancher.io/local-path" || hasCSIDriver(provisioner) {
+		return name, true
+	}
+
+	// do not have an available storageclass, apply a local-path-stoarge for it
+	_, err := utils.Kubectl(nil, "apply", "-f", filepath.Join("fixtures", "local-path-storage.yaml"))
 	Expect(err).NotTo(HaveOccurred())
 
-	jsonPath = `jsonpath='{.items[0].spec.drivers}'`
+	Eventually(func(g Gomega) {
+		_, err := utils.Kubectl(nil, "apply", "-f", filepath.Join("fixtures", "local-path-storage.yaml"))
+		g.Expect(err).NotTo(HaveOccurred())
+	}, time.Second*120, time.Second*5).Should(Succeed(), fmt.Sprintln("failed to apply local-path-storage"))
+
+	return "local-path", false
+}
+
+func hasCSIDriver(provisioner string) bool {
+	jsonPath := `jsonpath='{.items[0].spec.drivers}'`
 	csidriver, err := utils.Kubectl(nil, "get", "csinodes", "-o", jsonPath)
 	fmt.Println("csidriver:", csidriver)
 	Expect(err).NotTo(HaveOccurred())
 
-	if (csidriver == "'<nil>'") && (strings.Contains(csiMigratedPlugins, "kubernetes.io/aws-ebs,kubernetes.io/azure-disk")) {
-		// apply a new local-path-storage
-		_, err := utils.Kubectl(nil, "apply", "-f", filepath.Join("fixtures", "local-path-storage.yaml"))
-		Expect(err).NotTo(HaveOccurred())
-		return "local-path"
+	if (csidriver == "'<nil>'") || (csidriver != provisioner) {
+		return false
 	}
+	return true
+}
+
+func getKubernetesVersion() string {
+	jsonStr, _ := utils.Kubectl(nil, "version", "-o", "json")
+	versionmap := make(map[string]map[string]string)
+	err := json.Unmarshal([]byte(jsonStr), &versionmap)
+	Expect(err).NotTo(HaveOccurred())
+
+	for k, v := range versionmap {
+		if k == "serverVersion" {
+			fmt.Println("cluster KubernetesVersion:", v["major"]+"."+v["minor"])
+			return v["major"] + "." + v["minor"]
+		}
+	}
+
 	return ""
+}
+
+func getDefaultStorageClass() (string, string) {
+	output, err := utils.Kubectl(nil, "get", "storageclasses")
+	Expect(err).NotTo(HaveOccurred())
+	if !strings.Contains(output, "(default)") {
+		return "", ""
+	}
+
+	jsonPath := `jsonpath='{.items[0].metadata.name}'`
+	name, err := utils.Kubectl(nil, "get", "storageclass", "-o", jsonPath)
+	Expect(err).NotTo(HaveOccurred())
+
+	jsonPath = `jsonpath='{.items[0].provisioner}'`
+	provisioner, err := utils.Kubectl(nil, "get", "storageclass", "-o", jsonPath)
+	Expect(err).NotTo(HaveOccurred())
+
+	return name, provisioner
 }
 
 func getContourEnvoyLoadBalancerIP() string {
