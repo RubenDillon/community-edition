@@ -186,8 +186,8 @@ return storageclass name for PVC
 */
 func setStorageClass() string {
 	jsonPath := `jsonpath='{.items[0].metadata.annotations}'`
-	csi_migrated_plugins, err := utils.Kubectl(nil, "get", "csinodes", "-o", jsonPath)
-	fmt.Println("csi_migrated_plugins:", csi_migrated_plugins)
+	csiMigratedPlugins, err := utils.Kubectl(nil, "get", "csinodes", "-o", jsonPath)
+	fmt.Println("csiMigratedPlugins:", csiMigratedPlugins)
 	Expect(err).NotTo(HaveOccurred())
 
 	jsonPath = `jsonpath='{.items[0].spec.drivers}'`
@@ -195,7 +195,7 @@ func setStorageClass() string {
 	fmt.Println("csidriver:", csidriver)
 	Expect(err).NotTo(HaveOccurred())
 
-	if (csidriver == "'<nil>'") && (strings.Contains(csi_migrated_plugins, "kubernetes.io/aws-ebs,kubernetes.io/azure-disk")) {
+	if (csidriver == "'<nil>'") && (strings.Contains(csiMigratedPlugins, "kubernetes.io/aws-ebs,kubernetes.io/azure-disk")) {
 		// apply a new local-path-storage
 		_, err := utils.Kubectl(nil, "apply", "-f", filepath.Join("fixtures", "local-path-storage.yaml"))
 		Expect(err).NotTo(HaveOccurred())
