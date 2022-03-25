@@ -201,9 +201,7 @@ func setStorageClass() string {
 		Expect(err).NotTo(HaveOccurred())
 		return "local-path"
 	}
-
 	return ""
-
 }
 
 func getContourEnvoyLoadBalancerIP() string {
